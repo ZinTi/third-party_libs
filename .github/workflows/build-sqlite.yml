@@ -178,26 +178,14 @@ jobs:
       shell: bash
       run: |
         if [ "$RUNNER_OS" == "Windows" ]; then
-          if [ "${{ matrix.c_compiler }}" == "cl" ]; then
-            # Windows + MSVC
-            mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}/{bin,lib,include}
-            mkdir -p ./sqlite-src/build && cd ./sqlite-src/build
-            which nmake || (echo "nmake not found in PATH" && exit 1)
-            nmake /f ../Makefile.msc
-            cp sqlite3.exe ../${{ steps.strings.outputs.RELEASE_DIR_NAME }}/bin/
-            cp sqlite3.dll ../${{ steps.strings.outputs.RELEASE_DIR_NAME }}/bin/
-            cp sqlite3.lib ../${{ steps.strings.outputs.RELEASE_DIR_NAME }}/lib/
-            cp ../sqlite3.h ../sqlite3ext.h ../${{ steps.strings.outputs.RELEASE_DIR_NAME }}/include/
-          else
-            # Windows + MinGW (using autoconf)
-            mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
-            mkdir -p ./sqlite-src/build && cd ./sqlite-src/build
-            export CC=${{ matrix.c_compiler }}
-            ../configure --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} CFLAGS="-Os"
-            find . -name "Makefile" -exec sed -i 's|C:/Program Files/Git/usr/bin/install|/usr/bin/install|g' {} +  # 解决 install 命令空格问题
-            mingw32-make -j$(nproc)
-            mingw32-make install
-          fi
+          # Windows + MinGW (using autoconf)
+          mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+          mkdir -p ./sqlite-src/build && cd ./sqlite-src/build
+          export CC=${{ matrix.c_compiler }}
+          ../configure --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} CFLAGS="-Os"
+          find . -name "Makefile" -exec sed -i 's|C:/Program Files/Git/usr/bin/install|/usr/bin/install|g' {} +  # 解决 install 命令空格问题
+          mingw32-make -j$(nproc)
+          mingw32-make install
         else
           # Linux + GCC/Clang
           mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
