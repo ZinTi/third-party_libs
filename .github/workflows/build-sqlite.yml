@@ -116,13 +116,34 @@ jobs:
         tar -xzf ${{ steps.strings.outputs.SRC_PKG_NAME }}
         mv sqlite-autoconf-3500400 sqlite-src
 
-    - name: Build (Windows + MSVC)
+    - name: Build (Windows MSVC)
       if: matrix.os == 'windows-latest' && matrix.c_compiler == 'cl'
       shell: pwsh
       run: |
-        # 设置 MSVC 环境变量
-        Write-Host "Setting up MSVC environment..."
-        & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+        # 使用 Developer PowerShell for VS 2022
+        $vsInstallPath = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+        $devShellPath = "$vsInstallPath\Common7\Tools\Launch-VsDevShell.ps1"
+        
+        if (-not (Test-Path $devShellPath)) {
+            $vsInstallPath = "C:\Program Files\Microsoft Visual Studio\2022\Professional"
+            $devShellPath = "$vsInstallPath\Common7\Tools\Launch-VsDevShell.ps1"
+        }
+        
+        if (-not (Test-Path $devShellPath)) {
+            $vsInstallPath = "C:\Program Files\Microsoft Visual Studio\2022\Community" 
+            $devShellPath = "$vsInstallPath\Common7\Tools\Launch-VsDevShell.ps1"
+        }
+        
+        if (Test-Path $devShellPath) {
+            Write-Host "Launching Developer PowerShell for Visual Studio..."
+            & $devShellPath -Arch amd64
+        } else {
+            Write-Error "Developer PowerShell for Visual Studio not found"
+            exit 1
+        }
+        
+        # 现在在 Developer PowerShell 环境中构建
+        Write-Host "Building SQLite with MSVC..."
         
         # 创建输出目录
         $releaseDir = "${{ steps.strings.outputs.RELEASE_DIR_NAME }}"
@@ -134,10 +155,15 @@ jobs:
         Set-Location "sqlite-src"
         
         # 使用 nmake 构建
-        Write-Host "Building SQLite with nmake..."
+        Write-Host "Running nmake with Makefile.msc..."
         nmake /f Makefile.msc
         
-        # 复制文件到输出目录
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "nmake failed with exit code $LASTEXITCODE"
+            exit 1
+        }
+        
+        # 复制构建结果
         Write-Host "Copying build artifacts..."
         Copy-Item "sqlite3.exe" "..\$releaseDir\bin\"
         Copy-Item "sqlite3.dll" "..\$releaseDir\bin\"
