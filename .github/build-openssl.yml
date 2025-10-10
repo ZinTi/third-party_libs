@@ -1,5 +1,3 @@
-# This starter workflow is for a CMake project running on multiple platforms. There is a different starter workflow if you just want a single platform.
-# See: https://github.com/actions/starter-workflows/blob/main/ci/cmake-single-platform.yml
 name: OpenSSL on multiple platforms
 
 on:
@@ -82,7 +80,7 @@ jobs:
             if [ "${{ matrix.c_compiler }}" == "cl" ]; then
               toolchain="msvc"
             else
-              toolchain="mingw"
+              toolchain="msys2"
             fi
           fi
           release_dir_name="${library_name}-${full_version}-${platform}-${toolchain}"
@@ -133,7 +131,7 @@ jobs:
         }
         
         # 现在在 Developer PowerShell 环境中构建
-        Write-Host "Building SQLite with MSVC..."
+        Write-Host "Building OpenSSL with MSVC..."
         
         # 创建输出目录
         # $releaseDir = "${{ steps.strings.outputs.RELEASE_DIR_NAME }}"
@@ -157,53 +155,110 @@ jobs:
             exit 1
         }
         
-        # 复制构建结果
-        Write-Host "Copying build artifacts..."
-        # Copy-Item "openssl.exe" "..\$releaseDir\bin\"
-        # Copy-Item "openssl.dll" "..\$releaseDir\bin\"
-        # Copy-Item "openssl.lib" "..\$releaseDir\lib\"
-        # Copy-Item "openssl.h" "..\$releaseDir\include\"
         nmake install
-        
         Write-Host "MSVC build completed successfully!"
 
-    - name: Install Strawberry Perl(Windows MinGW)
+    - name: Build (Windows MSYS2 MinGW)
       if: matrix.os == 'windows-latest' && matrix.c_compiler == 'gcc'
-      shell: pwsh
-      run: |
-        # curl -L -o strawberry-perl.zip "https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54201_64bit/strawberry-perl-5.42.0.1-64bit-portable.zip"
-        # unzip strawberry-perl.zip -d /c/StrawberryPerl
-        # echo "/c/StrawberryPerl/perl/bin" >> $GITHUB_PATH
-        # echo "/c/StrawberryPerl/c/bin" >> $GITHUB_PATH
-        Get-Command perl -All
-        C:\Strawberry\perl\bin\perl.exe -v
-        "C:\Program Files\Git\usr\bin\perl.exe" -v
-
-    - name: Build (Other platforms)
-      if: matrix.os != 'windows-latest' || matrix.c_compiler != 'cl'
       shell: bash
       run: |
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          # Windows + MinGW
+        # 更新系统并安装依赖（带重试机制）
+        function install_with_retry {
+          local max_retries=3
+          local retry_delay=10
+          local attempt=1
+          
+          while [ $attempt -le $max_retries ]; do
+            echo "Attempt $attempt: $1"
+            C:/msys64/usr/bin/bash -lc "$1" && return 0
+            sleep $retry_delay
+            ((attempt++))
+          done
+          return 1
+        }
 
-          mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
-          mkdir -p ./openssl-src/build && cd ./openssl-src/build
-          C:/Strawberry/perl/bin/perl.exe ../Configure --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} --openssldir=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}/ssl \
-            no-ssl3 no-weak-ssl-ciphers -DOPENSSL_USE_NODELETE \
-            CC=${{ matrix.c_compiler }} CXX=${{ matrix.cpp_compiler }} mingw
-          find . -name "Makefile" -exec sed -i 's|C:/Program Files/Git/usr/bin/install|/usr/bin/install|g' {} +  # 解决 install 命令空格问题
-          mingw32-make -j$(nproc)
-          mingw32-make install
-        else
-          # Linux + GCC/Clang
-          mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
-          mkdir -p ./openssl-src/build && cd ./openssl-src/build
-          ../Configure --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} --openssldir=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}/ssl \
-           -Wl,-rpath,'$(LIBRPATH)' no-ssl3 no-weak-ssl-ciphers -DOPENSSL_USE_NODELETE \
-           CC=${{ matrix.c_compiler }} CXX=${{ matrix.cpp_compiler }}
+        # 更新系统
+        install_with_retry "pacman --noconfirm -Sy"
+        install_with_retry "pacman --noconfirm -S msys2-keyring"
+        install_with_retry "pacman --noconfirm -Syu"
+
+        # 安装必要包 - 使用 msys/perl 而不是 mingw-w64-x86_64-perl
+        install_with_retry "pacman --noconfirm -S \
+          mingw-w64-x86_64-toolchain \
+          msys/perl \
+          make \
+          nasm \
+          git \
+          base-devel"
+
+        # 在MSYS2环境中执行后续操作
+        C:/msys64/usr/bin/bash -lc "
+          # 设置正确的环境
+          export MSYSTEM=MINGW64
+          export CHERE_INVOKING=1
+          export MSYS2_PATH_TYPE=inherit
+          
+          # 重新加载profile以设置正确环境
+          source /etc/profile
+
+          echo '=== System Info ==='
+          echo \"Current shell: \$SHELL\"
+          echo \"Perl path: \$(which perl)\"
+          echo \"Perl version:\"
+          perl -v | head -n5
+          echo \"Perl platform: \$(perl -e 'print \$^O')\"
+          echo \"GCC version: \$(gcc --version | head -n1)\"
+
+          # 进入源码目录
+          cd ${{ steps.strings.outputs.REPO_DIR }}/openssl-src
+          pwd
+          ls -la
+
+          # 检查Configure脚本是否存在
+          if [ ! -f Configure ]; then
+            echo '错误：找不到Configure脚本！'
+            ls -la
+            exit 1
+          fi
+
+          # 创建构建目录
+          mkdir -p build
+          cd build
+
+          # 设置locale避免警告
+          export LANG=C
+          export LC_ALL=C
+
+          # 运行Configure
+          echo '=== 开始配置OpenSSL ==='
+          perl ../Configure mingw64 \
+            --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} \
+            --openssldir=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}/ssl \
+            no-ssl3 no-weak-ssl-ciphers \
+            -DOPENSSL_USE_NODELETE \
+            --release
+
+          echo '=== 配置完成，开始编译 ==='
           make -j$(nproc)
+          
+          echo '=== 编译完成，开始安装 ==='
           make install
-        fi
+
+          echo '=== OpenSSL 构建完成 ==='
+        "
+
+    - name: Build (Linux GCC/Clang)
+      if: matrix.os != 'windows-latest'
+      shell: bash
+      run: |
+        # Linux + GCC/Clang
+        mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+        mkdir -p ./openssl-src/build && cd ./openssl-src/build
+        ../Configure --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} --openssldir=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}/ssl \
+          -Wl,-rpath,'$(LIBRPATH)' no-ssl3 no-weak-ssl-ciphers -DOPENSSL_USE_NODELETE \
+          CC=${{ matrix.c_compiler }} CXX=${{ matrix.cpp_compiler }}
+        make -j$(nproc)
+        make install
 
     - name: Package
       shell: bash
