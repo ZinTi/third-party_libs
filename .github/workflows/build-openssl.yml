@@ -1,22 +1,11 @@
-# This starter workflow is for a CMake project running on multiple platforms. There is a different starter workflow if you just want a single platform.
-# See: https://github.com/actions/starter-workflows/blob/main/ci/cmake-single-platform.yml
-
-# Release Package Naming Format：
-#     <name>-<component>-v<semantic version>-<date build number>.<daily iteration number>-<platform>-<architecture>-<toolchain>.<extension>
-#  
-# Examples:
-#     sqlite-v3.50.4-20250928.1-linux-x86_x64-gcc.tar.xz
-#     sqlite-v3.50.4-20250928.2-linux-x86_x64-clang.tar.xz
-#     sqlite-v3.50.4-20250928.3-windows-x86_x64-mingw.7z
-#     sqlite-v3.50.4-20250928.4-windows-x86_x64-msvc.7z
-
-name: SQLite on multiple platforms
+name: OpenSSL on multiple platforms
 
 on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+  workflow_dispatch:
+  # push:
+  #   branches: [ "main", "master" ]
+  # pull_request:
+  #   branches: [ "main", "master" ]
 
 jobs:
   build:
@@ -73,10 +62,10 @@ jobs:
       shell: bash
       run: |
           # library sources
-          library_name="sqlite"
-          library_version="3.50.4"
-          src_pkg_name="sqlite-autoconf-3500400.tar.gz"
-          download_url="https://sqlite.org/2025/${src_pkg_name}"
+          library_name="openssl"
+          library_version="3.5.4"
+          src_pkg_name="openssl-3.5.4.tar.gz"
+          download_url="https://github.com/openssl/openssl/releases/download/openssl-${library_version}/${src_pkg_name}"
 
           # github repo path
           repo_dir="${{ github.workspace }}"       # 从GitHub上下文获取路径并标准化
@@ -92,7 +81,7 @@ jobs:
             if [ "${{ matrix.c_compiler }}" == "cl" ]; then
               toolchain="msvc"
             else
-              toolchain="mingw"
+              toolchain="msys2"
             fi
           fi
           release_dir_name="${library_name}-${full_version}-${platform}-${toolchain}"
@@ -112,9 +101,9 @@ jobs:
     - name: Download sources
       shell: bash
       run: |
-        curl --retry 3 -O ${{ steps.strings.outputs.DOWNLOAD_URL }}
+        curl -k -L --retry 3 --connect-timeout 30 -O ${{ steps.strings.outputs.DOWNLOAD_URL }}
         tar -xzf ${{ steps.strings.outputs.SRC_PKG_NAME }}
-        mv sqlite-autoconf-3500400 sqlite-src
+        mv openssl-3.5.4 openssl-src
 
     - name: Build (Windows MSVC)
       if: matrix.os == 'windows-latest' && matrix.c_compiler == 'cl'
@@ -143,58 +132,134 @@ jobs:
         }
         
         # 现在在 Developer PowerShell 环境中构建
-        Write-Host "Building SQLite with MSVC..."
+        Write-Host "Building OpenSSL with MSVC..."
         
         # 创建输出目录
-        $releaseDir = "${{ steps.strings.outputs.RELEASE_DIR_NAME }}"
-        New-Item -ItemType Directory -Force -Path "$releaseDir\bin"
-        New-Item -ItemType Directory -Force -Path "$releaseDir\lib" 
-        New-Item -ItemType Directory -Force -Path "$releaseDir\include"
+        # $releaseDir = "${{ steps.strings.outputs.RELEASE_DIR_NAME }}"
+        # New-Item -ItemType Directory -Force -Path "$releaseDir\bin"
+        # New-Item -ItemType Directory -Force -Path "$releaseDir\lib" 
+        # New-Item -ItemType Directory -Force -Path "$releaseDir\include"
         
         # 进入构建目录
-        Set-Location "sqlite-src"
+        Set-Location "openssl-src"
+
+        # 配置构建
+        Write-Host "Configuring build..."
+        perl Configure VC-WIN64A-HYBRIDCRT --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} --openssldir=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}/ssl no-ssl3 no-weak-ssl-ciphers -DOPENSSL_USE_NODELETE -D_WIN32_WINNT=0x0A00
         
         # 使用 nmake 构建
-        Write-Host "Running nmake with Makefile.msc..."
-        nmake /f Makefile.msc
+        Write-Host "Running nmake..."
+        nmake
         
         if ($LASTEXITCODE -ne 0) {
             Write-Error "nmake failed with exit code $LASTEXITCODE"
             exit 1
         }
         
-        # 复制构建结果
-        Write-Host "Copying build artifacts..."
-        Copy-Item "sqlite3.exe" "..\$releaseDir\bin\"
-        Copy-Item "sqlite3.dll" "..\$releaseDir\bin\"
-        Copy-Item "sqlite3.lib" "..\$releaseDir\lib\"
-        Copy-Item "sqlite3.h" "..\$releaseDir\include\"
-        Copy-Item "sqlite3ext.h" "..\$releaseDir\include\"
-        
+        nmake install
         Write-Host "MSVC build completed successfully!"
 
-    - name: Build (Other platforms)
-      if: matrix.os != 'windows-latest' || matrix.c_compiler != 'cl'
+    - name: Build (Windows MSYS2 MinGW)
+      if: matrix.os == 'windows-latest' && matrix.c_compiler == 'gcc'
       shell: bash
       run: |
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          # Windows + MinGW (using autoconf)
-          mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
-          mkdir -p ./sqlite-src/build && cd ./sqlite-src/build
-          export CC=${{ matrix.c_compiler }}
-          ../configure --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} CFLAGS="-Os"
-          find . -name "Makefile" -exec sed -i 's|C:/Program Files/Git/usr/bin/install|/usr/bin/install|g' {} +  # 解决 install 命令空格问题
-          mingw32-make -j$(nproc)
-          mingw32-make install
-        else
-          # Linux + GCC/Clang
-          mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
-          mkdir -p ./sqlite-src/build && cd ./sqlite-src/build
-          export CC=${{ matrix.c_compiler }}
-          ../configure --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} CFLAGS="-Os"
+        # 更新系统并安装依赖（带重试机制）
+        function install_with_retry {
+          local max_retries=3
+          local retry_delay=10
+          local attempt=1
+          
+          while [ $attempt -le $max_retries ]; do
+            echo "Attempt $attempt: $1"
+            C:/msys64/usr/bin/bash -lc "$1" && return 0
+            sleep $retry_delay
+            ((attempt++))
+          done
+          return 1
+        }
+
+        # 更新系统
+        install_with_retry "pacman --noconfirm -Sy"
+        install_with_retry "pacman --noconfirm -S msys2-keyring"
+        install_with_retry "pacman --noconfirm -Syu"
+
+        # 安装必要包 - 使用 msys/perl 而不是 mingw-w64-x86_64-perl
+        install_with_retry "pacman --noconfirm -S \
+          mingw-w64-x86_64-toolchain \
+          msys/perl \
+          make \
+          nasm \
+          git \
+          base-devel"
+
+        # 在MSYS2环境中执行后续操作
+        C:/msys64/usr/bin/bash -lc "
+          # 设置正确的环境
+          export MSYSTEM=MINGW64
+          export CHERE_INVOKING=1
+          export MSYS2_PATH_TYPE=inherit
+          
+          # 重新加载profile以设置正确环境
+          source /etc/profile
+
+          echo '=== System Info ==='
+          echo \"Current shell: \$SHELL\"
+          echo \"Perl path: \$(which perl)\"
+          echo \"Perl version:\"
+          perl -v | head -n5
+          echo \"Perl platform: \$(perl -e 'print \$^O')\"
+          echo \"GCC version: \$(gcc --version | head -n1)\"
+
+          # 进入源码目录
+          cd ${{ steps.strings.outputs.REPO_DIR }}/openssl-src
+          pwd
+          ls -la
+
+          # 检查Configure脚本是否存在
+          if [ ! -f Configure ]; then
+            echo '错误：找不到Configure脚本！'
+            ls -la
+            exit 1
+          fi
+
+          # 创建构建目录
+          mkdir -p build
+          cd build
+
+          # 设置locale避免警告
+          export LANG=C
+          export LC_ALL=C
+
+          # 运行Configure
+          echo '=== 开始配置OpenSSL ==='
+          perl ../Configure mingw64 \
+            --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} \
+            --openssldir=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}/ssl \
+            no-ssl3 no-weak-ssl-ciphers \
+            -DOPENSSL_USE_NODELETE \
+            --release
+
+          echo '=== 配置完成，开始编译 ==='
           make -j$(nproc)
+          
+          echo '=== 编译完成，开始安装 ==='
           make install
-        fi
+
+          echo '=== OpenSSL 构建完成 ==='
+        "
+
+    - name: Build (Linux GCC/Clang)
+      if: matrix.os != 'windows-latest'
+      shell: bash
+      run: |
+        # Linux + GCC/Clang
+        mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+        mkdir -p ./openssl-src/build && cd ./openssl-src/build
+        ../Configure --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} --openssldir=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}/ssl \
+          -Wl,-rpath,'$(LIBRPATH)' no-ssl3 no-weak-ssl-ciphers -DOPENSSL_USE_NODELETE \
+          CC=${{ matrix.c_compiler }} CXX=${{ matrix.cpp_compiler }}
+        make -j$(nproc)
+        make install
 
     - name: Package
       shell: bash
@@ -208,7 +273,7 @@ jobs:
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: sqlite3-${{ matrix.os }}-${{ matrix.c_compiler }}
+        name: openssl-${{ matrix.os }}-${{ matrix.c_compiler }}
         path: |
           ${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}.tar.xz
           ${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}.7z

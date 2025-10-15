@@ -1,10 +1,11 @@
 name: Boost on multiple platforms
 
 on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+  workflow_dispatch:
+  # push:
+  #   branches: [ "main", "master" ]
+  # pull_request:
+  #   branches: [ "main", "master" ]
 
 jobs:
   build:
@@ -80,7 +81,7 @@ jobs:
             if [ "${{ matrix.c_compiler }}" == "cl" ]; then
               toolchain="msvc"
             else
-              toolchain="mingw"
+              toolchain="msys2"
             fi
           fi
           release_dir_name="${library_name}-${full_version}-${platform}-${toolchain}"
@@ -100,9 +101,9 @@ jobs:
     - name: Download sources
       shell: bash
       run: |
-        curl --retry 3 -O ${{ steps.strings.outputs.DOWNLOAD_URL }}
+        curl -k -L --retry 3 --connect-timeout 30 -O ${{ steps.strings.outputs.DOWNLOAD_URL }}
         tar -xzf ${{ steps.strings.outputs.SRC_PKG_NAME }}
-        mv "${${{ steps.strings.outputs.SRC_PKG_NAME }}%.tar.gz}" boost-src
+        mv boost-1.89.0 boost-src
         ls -la boost-src
 
     - name: Build (Windows MSVC)
@@ -135,33 +136,90 @@ jobs:
         Write-Host "Building Boost with MSVC..."
         
         # 创建输出目录
-        $releaseDir = "${{ steps.strings.outputs.RELEASE_DIR_NAME }}"
-        New-Item -ItemType Directory -Force -Path "$releaseDir\bin"
-        New-Item -ItemType Directory -Force -Path "$releaseDir\lib" 
-        New-Item -ItemType Directory -Force -Path "$releaseDir\include"
+        New-Item -ItemType Directory -Force -Path "${{ steps.strings.outputs.RELEASE_DIR_NAME }}"
         
         # 进入构建目录构建
         Set-Location "boost-src"
         .\bootstrap.bat
-        .\b2 toolset=msvc variant=release,debug threading=multi link=static,shared runtime-link=shared --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} install
+        .\b2 toolset=msvc address-model=64 variant=release,debug threading=multi link=static,shared runtime-link=shared --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} install
 
-    - name: Build (Other platforms)
-      if: matrix.os != 'windows-latest' || matrix.c_compiler != 'cl'
+    - name: Build (Windows MSYS2 MinGW)
+      if: matrix.os == 'windows-latest' && matrix.c_compiler == 'gcc'
       shell: bash
       run: |
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          # Windows + MinGW
+        # 更新系统并安装依赖（带重试机制）
+        function install_with_retry {
+          local max_retries=3
+          local retry_delay=10
+          local attempt=1
+          
+          while [ $attempt -le $max_retries ]; do
+            echo "Attempt $attempt: $1"
+            C:/msys64/usr/bin/bash -lc "$1" && return 0
+            sleep $retry_delay
+            ((attempt++))
+          done
+          return 1
+        }
+
+        # 更新系统
+        install_with_retry "pacman --noconfirm -Sy"
+        install_with_retry "pacman --noconfirm -S msys2-keyring"
+        install_with_retry "pacman --noconfirm -Syu"
+
+        # 安装必要包 - 使用 msys/perl 而不是 mingw-w64-x86_64-perl
+        install_with_retry "pacman --noconfirm -S \
+          base-devel \
+          mingw-w64-x86_64-toolchain \
+          mingw-w64-x86_64-zlib \
+          mingw-w64-x86_64-bzip2 \
+          mingw-w64-x86_64-python \
+          mingw-w64-x86_64-icu \
+          mingw-w64-x86_64-graphviz \
+          msys/perl \
+          make \
+          nasm \
+          git"
+
+        # 在MSYS2环境中执行后续操作
+        C:/msys64/usr/bin/bash -lc "
+          # 设置正确的环境
+          export MSYSTEM=MINGW64
+          export CHERE_INVOKING=1
+          export MSYS2_PATH_TYPE=inherit
+          
+          # 重新加载profile以设置正确环境
+          source /etc/profile
+
+          # 创建安装目录和进入源码目录
+          cd ${{ steps.strings.outputs.REPO_DIR }}
           mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
-          mkdir -p ./boost-src/build && cd ./boost-src/build
-          ../bootstrap.sh --with-toolset=${{ matrix.c_compiler }}
-          ./b2 toolset=${{ matrix.c_compiler }} variant=release,debug threading=multi link=static,shared runtime-link=shared --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }} install
-        else
-          # Linux + GCC/Clang
-          mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
-          mkdir -p ./boost-src/build && cd ./boost-src/build
-          ../bootstrap.sh --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}
-          ./b2 toolset=${{ matrix.c_compiler }} variant=release,debug threading=multi link=static,shared install
-        fi
+          cd boost-src
+          pwd
+          ls -la
+
+          # 构建
+          ./bootstrap.sh --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+          ./b2 --without-python --without-stacktrace toolset=${{ matrix.c_compiler }} address-model=64 variant=release,debug threading=multi link=static,shared runtime-link=shared -j$(nproc) install
+        "
+
+    # - name: Build (Windows MSYS2 MinGW)
+    #   if: matrix.os == 'windows-latest' && matrix.c_compiler == 'gcc'
+    #   shell: bash
+    #   run: |
+    #     mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+    #     cd ./boost-src
+    #     ./bootstrap.sh --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+    #     ./b2 toolset=${{ matrix.c_compiler }} variant=release,debug threading=multi link=static,shared runtime-link=shared install
+
+    - name: Build (Linux GCC/CLang)
+      if: matrix.os != 'windows-latest'
+      shell: bash
+      run: |
+        mkdir -p ./${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+        cd ./boost-src
+        ./bootstrap.sh --prefix=${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+        ./b2 toolset=${{ matrix.c_compiler }} variant=release,debug threading=multi link=static,shared install
 
     - name: Package
       shell: bash

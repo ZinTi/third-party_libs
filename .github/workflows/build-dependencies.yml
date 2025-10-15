@@ -15,7 +15,7 @@ on:
           - grpc
           - openssl
           - qt5
-          - boost-uuid
+          - boost
           - sqlite3
           - yaml-cpp
 
