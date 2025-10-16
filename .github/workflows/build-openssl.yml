@@ -96,13 +96,13 @@ jobs:
 
           # debug output
           echo "=== GITHUB_OUTPUT ==="
-          echo "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
 
     - name: Download sources
       shell: bash
       run: |
         curl -k -L --retry 3 --connect-timeout 30 -O ${{ steps.strings.outputs.DOWNLOAD_URL }}
-        tar -xzf ${{ steps.strings.outputs.SRC_PKG_NAME }}
+        tar -xvf ${{ steps.strings.outputs.SRC_PKG_NAME }}
         mv openssl-3.5.4 openssl-src
 
     - name: Build (Windows MSVC)
@@ -267,7 +267,7 @@ jobs:
         if [ "$RUNNER_OS" == "Windows" ]; then
           7z a -r ${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}.7z ${{ steps.strings.outputs.RELEASE_DIR_NAME }}
         else
-          tar -Jcvf ${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}.tar.xz ${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+          tar -cJvf ${{ steps.strings.outputs.REPO_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}.tar.xz ${{ steps.strings.outputs.RELEASE_DIR_NAME }}
         fi
 
     - name: Upload artifacts
