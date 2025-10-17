@@ -1,0 +1,136 @@
+name: gRPC on multiple platforms
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build-and-package:
+    runs-on: ${{ matrix.os }} # 指定运行环境，使用矩阵变量os
+    strategy: # 定义构建策略
+      fail-fast: false # 设置fail-fast为false，即使矩阵中一个任务失败，其他任务也会继续执行
+      matrix:  # 定义矩阵策略，用于创建多个构建配置组合
+        os: [ubuntu-latest, windows-latest]
+        c_compiler: [gcc, clang, cl]
+        include: # 包含特定组合的列表（精确控制矩阵）
+          # Windows + MSVC
+          - os: windows-latest
+            triplet: x64-windows-msvc-static-release
+            c_compiler: cl
+            cpp_compiler: cl
+            generator: "Visual Studio 17 2022"
+            arch: "x64"
+          # Windows + MinGW
+          - os: windows-latest
+            triplet: x64-windows-mingw-static-release
+            c_compiler: gcc
+            cpp_compiler: g++
+            generator: "MinGW Makefiles"
+          # Linux + GCC
+          - os: ubuntu-latest
+            triplet: x64-linux-gcc-static-release
+            c_compiler: gcc
+            cpp_compiler: g++
+            generator: "Unix Makefiles"
+          # Linux + Clang
+          - os: ubuntu-latest
+            triplet: x64-linux-clang-static-release
+            c_compiler: clang
+            cpp_compiler: clang++
+            generator: "Unix Makefiles"
+        exclude: # 排除不需要的组合
+          # 排除 Windows + Clang
+          - os: windows-latest
+            c_compiler: clang
+          # 排除 Ubuntu + MSVC
+          - os: ubuntu-latest
+            c_compiler: cl
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4 # 使用actions/checkout动作检出代码库
+
+      - name: Set reusable strings
+        # Turn repeated input strings (such as the build output directory) into step outputs. These step outputs can be used throughout the workflow file.
+        id: strings
+        shell: bash
+        run: |
+            # github workspace path
+            workspace_dir="${{ github.workspace }}"       # 从GitHub上下文获取路径并标准化
+            workspace_dir="${workspace_dir//\\//}"        # 替换所有反斜杠为正斜杠
+            workspace_dir="${workspace_dir%/}"            # 移除路径末尾的斜杠（若有）
+
+            # release output path
+            full_version="v1.75.1-$(date +'%Y%m%d').${{ github.run_number }}" # 使用语义化版本+日期+构建号
+            platform=$(echo $RUNNER_OS | tr '[:upper:]' '[:lower:]')-$(uname -m) # short_os-arch
+            if [ "$RUNNER_OS" == "Linux" ]; then
+              toolchain="${{ matrix.c_compiler }}"
+            elif [ "$RUNNER_OS" == "Windows" ]; then
+              if [ "${{ matrix.c_compiler }}" == "cl" ]; then
+                toolchain="msvc"
+              else
+                toolchain="mingw"
+              fi
+            fi
+            release_dir_name="grpc-${full_version}-${platform}-${toolchain}"
+
+            # github actions env
+            echo "WORKSPACE_DIR=$workspace_dir" >> "$GITHUB_OUTPUT"
+            echo "RELEASE_DIR_NAME=$release_dir_name" >> "$GITHUB_OUTPUT"
+
+            # debug output
+            echo "=== GITHUB_OUTPUT ==="
+            cat "$GITHUB_OUTPUT"
+
+      - name: Pull gRPC repo
+        shell: bash
+        run: |
+          git clone --recurse-submodules -b v1.75.1 --depth 1 --shallow-submodules https://github.com/grpc/grpc.git
+          mkdir -p ${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+          cd grpc
+          ls -alh
+
+      - name: Apply re2 header fix
+        shell: bash
+        run: |
+          # 修复 re2 头文件缺少 cstdint 包含的问题
+          sed -i '1i #include <cstdint>' ${{ steps.strings.outputs.WORKSPACE_DIR }}/grpc/third_party/re2/util/pcre.h
+          echo "Applied re2 header fix"
+
+      - name: Configure CMake project for MinGW
+        if: matrix.os == 'windows-latest' && matrix.c_compiler == 'gcc'
+        shell: bash
+        run: |
+          cmake -G "MinGW Makefiles" \
+          -S ${{ steps.strings.outputs.WORKSPACE_DIR }}/grpc \
+          -B ${{ steps.strings.outputs.WORKSPACE_DIR }}/build-release \
+          -DCMAKE_INSTALL_PREFIX=${{ steps.strings.outputs.RELEASE_DIR_NAME }} \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DCMAKE_C_STANDARD=17 -DCMAKE_CXX_STANDARD=17 \
+          -DgRPC_BUILD_TESTS=OFF \
+          -DOPENSSL_NO_ASM=ON -DOPENSSL_NO_ADX=ON
+
+      - name: Build And Install project
+        shell: bash
+        run: |
+            cmake --build ${{ steps.strings.outputs.WORKSPACE_DIR }}/build-release --target install --parallel 2 --verbose
+
+      - name: Package
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            7z a -r ${{ steps.strings.outputs.WORKSPACE_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}.7z ${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+          else
+            tar -cJvf ${{ steps.strings.outputs.WORKSPACE_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}.tar.xz ${{ steps.strings.outputs.RELEASE_DIR_NAME }}
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: grpc-${{ matrix.os }}-${{ matrix.c_compiler }}
+          path: |
+            ${{ steps.strings.outputs.WORKSPACE_DIR }}/${{ steps.strings.outputs.RELEASE_DIR_NAME }}.*
