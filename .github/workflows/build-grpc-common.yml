@@ -16,38 +16,12 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         c_compiler: [gcc, clang, cl]
         include: # 包含特定组合的列表（精确控制矩阵）
-          # Windows + MSVC
-          - os: windows-latest
-            triplet: x64-windows-msvc-static-release
-            c_compiler: cl
-            cpp_compiler: cl
-            generator: "Visual Studio 17 2022"
-            arch: "x64"
           # Windows + MinGW
           - os: windows-latest
             triplet: x64-windows-mingw-static-release
             c_compiler: gcc
             cpp_compiler: g++
             generator: "MinGW Makefiles"
-          # Linux + GCC
-          - os: ubuntu-latest
-            triplet: x64-linux-gcc-static-release
-            c_compiler: gcc
-            cpp_compiler: g++
-            generator: "Unix Makefiles"
-          # Linux + Clang
-          - os: ubuntu-latest
-            triplet: x64-linux-clang-static-release
-            c_compiler: clang
-            cpp_compiler: clang++
-            generator: "Unix Makefiles"
-        exclude: # 排除不需要的组合
-          # 排除 Windows + Clang
-          - os: windows-latest
-            c_compiler: clang
-          # 排除 Ubuntu + MSVC
-          - os: ubuntu-latest
-            c_compiler: cl
 
     steps:
       - name: Checkout code
